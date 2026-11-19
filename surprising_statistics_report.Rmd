@@ -1,0 +1,291 @@
+---
+title: "Surprising statistics about Czechia and national attachment (pilot 2)"
+subtitle: "LimeSurvey 543557 – Představy o Česku v2"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  github_document:
+    toc: true
+    toc_depth: 3
+params:
+  data_url: "https://raw.githubusercontent.com/janurban/nationalismAndClimateChange/main/data_coded.xlsx"
+  keep_only_complete: true
+  keep_only_citizens: true
+  drop_repeated: true
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+pkgs <- c("readxl", "dplyr", "tidyr", "knitr")
+missing <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly = TRUE)]
+if (length(missing)) install.packages(missing)
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(knitr)
+
+code_to_num <- function(x) as.numeric(sub("^A", "", x))
+fmt_p <- function(p) if (p < .001) "*p* < .001" else
+  sprintf("*p* = %s", sub("^0", "", sprintf("%.3f", p)))
+f2 <- function(x) sprintf("%.2f", x)
+```
+
+## Design
+
+Participants were randomly assigned (`groupno = rand(1,2)`) to complete two
+batteries, **national pride** (6 items, 4-point) and **nationalism**
+(4 items, 5-point), either **before** (group 1) or **after** (group 2) seven
+trials. In each trial they estimated Czechia's rank on a statistic, were shown
+the true (flattering) rank, and rated how surprising it was (1 = not at all,
+5 = very surprising). The design is between-subjects.
+
+```{r data}
+# The two batteries appear twice in the export under identical column names
+# (before block and after block); make.unique() renames the second copy "<name>.1".
+# Download the coded export from GitHub (raw link, binary mode for .xlsx)
+data_file <- tempfile(fileext = ".xlsx")
+dl <- try(download.file(params$data_url, data_file, mode = "wb", quiet = TRUE),
+          silent = TRUE)
+if (inherits(dl, "try-error") || dl != 0) {
+  stop("Could not download the data from ", params$data_url)
+}
+raw <- read_excel(data_file, .name_repair = make.unique)
+
+d <- raw
+if (params$keep_only_complete) d <- filter(d, !is.na(submitdate))
+if (params$keep_only_citizens) d <- filter(d, citizen == "A1")   # A1 = yes
+if (params$drop_repeated)      d <- filter(d, repeated != "A1")  # A1 = yes, repeated
+
+d <- d %>%
+  mutate(condition = factor(groupno, levels = c(1, 2),
+                            labels = c("Before manipulation",
+                                       "After manipulation")))
+
+n_raw      <- nrow(raw)
+n_complete <- sum(!is.na(raw$submitdate))
+n_final    <- nrow(d)
+n_by_group <- table(d$condition)
+```
+
+## Sample
+
+Of `r n_raw` started responses, `r n_complete` were completed. After the
+exclusions set in the YAML parameters (completed only: `r params$keep_only_complete`;
+Czech citizens only: `r params$keep_only_citizens`; repeat participants removed:
+`r params$drop_repeated`), the analysed sample is **N = `r n_final`**
+(before: n = `r n_by_group[[1]]`; after: n = `r n_by_group[[2]]`).
+
+```{r demographics}
+d %>%
+  mutate(gender = recode(gender, A1 = "Man", A2 = "Woman",
+                         A3 = "Non-binary / gender diverse",
+                         A4 = "Prefer not to say")) %>%
+  group_by(Condition = condition) %>%
+  summarise(n = n(),
+            `Age M (SD)` = sprintf("%.1f (%.1f)", mean(age, na.rm = TRUE),
+                                   sd(age, na.rm = TRUE)),
+            `% women` = sprintf("%.0f", 100 * mean(gender == "Woman"))) %>%
+  kable(format = "pipe", caption = "Sample by condition")
+```
+
+## Scoring
+
+```{r scoring}
+pride_items <- sprintf("proudness[SQ%03d]", 1:6)
+nat_items   <- sprintf("nationalism[SQ%03d]", 1:4)
+
+# Each person answered only one copy (before or after); merge them
+for (it in c(pride_items, nat_items)) {
+  d[[it]] <- ifelse(is.na(d[[it]]), d[[paste0(it, ".1")]], d[[it]])
+}
+
+# Reverse-code so higher = more pride / more nationalism
+d <- d %>%
+  mutate(across(all_of(pride_items), ~ 5 - code_to_num(.x)),
+         across(all_of(nat_items),   ~ 6 - code_to_num(.x)),
+         pride       = rowMeans(across(all_of(pride_items)), na.rm = TRUE),
+         nationalism = rowMeans(across(all_of(nat_items)),   na.rm = TRUE))
+
+cronbach_alpha <- function(x) {
+  x <- na.omit(as.data.frame(x)); k <- ncol(x)
+  (k / (k - 1)) * (1 - sum(apply(x, 2, var)) / var(rowSums(x)))
+}
+
+reliability <- expand_grid(Battery = c("Pride", "Nationalism"),
+                           Group = c(levels(d$condition), "Total")) %>%
+  rowwise() %>%
+  mutate(alpha = {
+    items <- if (Battery == "Pride") pride_items else nat_items
+    dd <- if (Group == "Total") d else d[d$condition == Group, ]
+    cronbach_alpha(dd[, items])
+  }) %>%
+  ungroup() %>%
+  pivot_wider(names_from = Group, values_from = alpha)
+```
+
+Pride items (A1 = very proud … A4 = not at all proud) were recoded to
+1–4 and nationalism items (A1 = strongly agree … A5 = strongly disagree) to
+1–5, so that higher values mean more pride or nationalism. Scale scores are
+item means.
+
+```{r reliability}
+kable(reliability, digits = 2, caption = "Cronbach's alpha")
+```
+
+## Table 1. Estimates, correct answers and surprise
+
+```{r table1}
+trials <- tribble(
+  ~guess_var,      ~surprise_var, ~Statistic,                                              ~Range,  ~correct,
+  "guess1[SQ001]", "suprise1",    "Lowest unemployment in the EU",                          "1–27",  1,
+  "guess2[s2]",    "suprise2",    "GDP per capita among 30 post-communist countries",       "1–30",  2,
+  "guess4[SQ001]", "suprise4",    "Number of castles/chateaux among 50 European countries", "1–50",  1,
+  "guess6[SQ001]", "suprise6",    "Subjective happiness among 160+ countries",              "1–160", 20,
+  "guess7[SQ001]", "suprise7",    "Overall sustainability among 160+ countries",            "1–160", 12,
+  "guess8[SQ001]", "suprise8",    "Age of Charles University among CEE universities",       "1–100", 1,
+  "guess9[SQ001]", "suprise9",    "Public libraries per capita among 160+ countries",       "1–160", 1
+)
+
+table1 <- trials %>%
+  rowwise() %>%
+  mutate(
+    guess    = list(as.numeric(d[[guess_var]])),
+    surprise = list(code_to_num(d[[surprise_var]])),
+    n           = sum(!is.na(guess)),
+    est_M       = mean(guess, na.rm = TRUE),
+    est_SD      = sd(guess, na.rm = TRUE),
+    est_Mdn     = median(guess, na.rm = TRUE),
+    pct_under   = 100 * mean(guess > correct, na.rm = TRUE),
+    pct_exact   = 100 * mean(guess == correct, na.rm = TRUE),
+    surprise_M  = mean(surprise, na.rm = TRUE),
+    surprise_SD = sd(surprise, na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+table1 %>%
+  transmute(Statistic, Range, `Correct rank` = correct, n,
+            `Estimate M (SD)` = sprintf("%.2f (%.2f)", est_M, est_SD),
+            `Estimate Mdn`    = est_Mdn,
+            `% placed CZ lower` = sprintf("%.0f", pct_under),
+            `% exact`           = sprintf("%.0f", pct_exact),
+            `Surprise M (SD)` = sprintf("%.2f (%.2f)", surprise_M, surprise_SD)) %>%
+  kable(format = "pipe", align = "llrrrrrrr",
+        caption = "Estimated rank of Czechia vs. the correct rank (1 = best). Surprise: 1 = not at all, 5 = very surprising.")
+
+d$surprise_mean <- rowMeans(sapply(trials$surprise_var,
+                                   function(v) code_to_num(d[[v]])), na.rm = TRUE)
+most  <- table1[which.max(table1$surprise_M), ]
+least <- table1[which.min(table1$surprise_M), ]
+```
+
+Respondents placed Czechia lower than its actual rank on every statistic. The
+share who did so ranged from `r sprintf("%.0f", min(table1$pct_under))`% to
+`r sprintf("%.0f", max(table1$pct_under))`%. Average surprise across the seven
+trials was *M* = `r f2(mean(d$surprise_mean))` (*SD* = `r f2(sd(d$surprise_mean))`).
+The most surprising fact was "`r most$Statistic`" (*M* = `r f2(most$surprise_M)`)
+and the least surprising was "`r least$Statistic`" (*M* = `r f2(least$surprise_M)`).
+
+Rank estimates are right-skewed, so medians are reported alongside means.
+
+## Table 2. Before vs. after the manipulation
+
+```{r ttests}
+cohens_d <- function(before, after) {
+  before <- na.omit(before); after <- na.omit(after)
+  n1 <- length(before); n2 <- length(after)
+  sp <- sqrt(((n1 - 1) * var(before) + (n2 - 1) * var(after)) / (n1 + n2 - 2))
+  dval <- (mean(after) - mean(before)) / sp
+  se <- sqrt((n1 + n2) / (n1 * n2) + dval^2 / (2 * (n1 + n2)))
+  c(d = dval, lo = dval - 1.96 * se, hi = dval + 1.96 * se)
+}
+
+run_ttest <- function(var, label) {
+  before <- d[[var]][d$condition == "Before manipulation"]
+  after  <- d[[var]][d$condition == "After manipulation"]
+  tt <- t.test(after, before, var.equal = FALSE)   # Welch
+  st <- t.test(after, before, var.equal = TRUE)    # Student
+  mw <- wilcox.test(after, before, exact = FALSE)  # Mann-Whitney
+  es <- cohens_d(before, after)
+  tibble(Measure = label,
+         n_before = sum(!is.na(before)), M_before = mean(before, na.rm = TRUE),
+         SD_before = sd(before, na.rm = TRUE),
+         n_after = sum(!is.na(after)), M_after = mean(after, na.rm = TRUE),
+         SD_after = sd(after, na.rm = TRUE),
+         t = unname(tt$statistic), df = unname(tt$parameter), p = tt$p.value,
+         d = es[["d"]], d_lo = es[["lo"]], d_hi = es[["hi"]],
+         t_student = unname(st$statistic), df_student = unname(st$parameter),
+         p_student = st$p.value, W = unname(mw$statistic), p_mw = mw$p.value)
+}
+
+table2 <- bind_rows(run_ttest("pride",       "National pride (1–4)"),
+                    run_ttest("nationalism", "Nationalism (1–5)"))
+
+table2 %>%
+  transmute(Measure,
+            `Before M (SD)` = sprintf("%.2f (%.2f)", M_before, SD_before),
+            `After M (SD)`  = sprintf("%.2f (%.2f)", M_after, SD_after),
+            `t (df)` = sprintf("%.2f (%.1f)", t, df),
+            p = sprintf("%.3f", p),
+            `d [95% CI]` = sprintf("%.2f [%.2f, %.2f]", d, d_lo, d_hi)) %>%
+  kable(format = "pipe", align = "lccccc",
+        caption = "Welch two-sample t-tests (between-subjects). Positive t and d mean higher scores after the surprising statistics.")
+```
+
+```{r writeup, results = "asis"}
+for (i in seq_len(nrow(table2))) {
+  r <- table2[i, ]
+  cat(sprintf(
+    "- **%s:** before *M* = %.2f (*SD* = %.2f, *n* = %d), after *M* = %.2f (*SD* = %.2f, *n* = %d); *t*(%.1f) = %.2f, %s, *d* = %.2f, 95%% CI [%.2f, %.2f].\n",
+    r$Measure, r$M_before, r$SD_before, r$n_before, r$M_after, r$SD_after,
+    r$n_after, r$df, r$t, fmt_p(r$p), r$d, r$d_lo, r$d_hi))
+}
+```
+
+### Robustness checks
+
+```{r robustness}
+table2 %>%
+  transmute(Measure,
+            `Student t (df)` = sprintf("%.2f (%d)", t_student, as.integer(df_student)),
+            `Student p` = sprintf("%.3f", p_student),
+            `Mann–Whitney W` = sprintf("%.0f", W),
+            `Mann–Whitney p` = sprintf("%.3f", p_mw)) %>%
+  kable(format = "pipe", caption = "Equal-variance t-test and Mann–Whitney U test")
+```
+
+```{r plot, fig.width = 7, fig.height = 3.5, fig.cap = "Scale scores by condition (means ± 95% CI)."}
+plot_df <- d %>%
+  select(condition, pride, nationalism) %>%
+  pivot_longer(-condition, names_to = "scale", values_to = "score") %>%
+  group_by(scale, condition) %>%
+  summarise(M = mean(score, na.rm = TRUE),
+            se = sd(score, na.rm = TRUE) / sqrt(sum(!is.na(score))),
+            .groups = "drop")
+
+op <- par(mfrow = c(1, 2), mar = c(4, 4, 2, 1))
+for (s in c("pride", "nationalism")) {
+  p <- plot_df[plot_df$scale == s, ]
+  rng <- if (s == "pride") c(1, 4) else c(1, 5)
+  x <- barplot(p$M, names.arg = c("Before", "After"), ylim = rng, xpd = FALSE,
+               col = c("grey70", "steelblue"), border = NA,
+               main = if (s == "pride") "National pride" else "Nationalism",
+               ylab = "Mean score")
+  arrows(x, p$M - 1.96 * p$se, x, p$M + 1.96 * p$se,
+         angle = 90, code = 3, length = 0.05)
+}
+par(op)
+```
+
+## Notes
+
+- The data are the LimeSurvey coded export, downloaded from
+  <`r params$data_url`>. Correct ranks
+  are taken from the feedback shown to respondents.
+- Internal consistency is modest (see the reliability table), so treat the
+  scale-level effects with caution.
+- Sample exclusions are controlled by the YAML `params` and can be changed
+  without editing the code, e.g.
+  `rmarkdown::render("surprising_statistics_report.Rmd", params = list(drop_repeated = FALSE))`.
+
+```{r session, include = FALSE}
+sessionInfo()
+```
