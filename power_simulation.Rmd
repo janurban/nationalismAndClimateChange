@@ -1,0 +1,141 @@
+---
+title: "Power Simulation for a Two-Group Experiment"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  pdf_document:
+    toc: true
+    number_sections: true
+    latex_engine: xelatex
+params:
+  nsims: 10000
+  seed: 20261119
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.width = 9, fig.height = 6)
+
+required <- c("ggplot2", "knitr")
+missing <- required[!vapply(required, requireNamespace, logical(1), quietly = TRUE)]
+if (length(missing) > 0) install.packages(missing)
+
+library(ggplot2)
+library(knitr)
+```
+
+# Design assumptions
+
+This simulation assumes:
+
+- two independent, approximately equal-sized groups;
+- a two-sided independent-samples $t$-test (Welch test) at $\alpha = .05$;
+- normally distributed outcomes with equal population standard deviations;
+- the specified effect size $d$ is the standardized mean difference, with a mean of $0$ in group 1 and $d$ in group 2.
+
+Here, `N` is the **total** sample size. With unequal allocation after integer rounding, group sizes are set to `floor(N / 2)` and `ceiling(N / 2)`.
+
+# Power simulation
+
+```{r simulation}
+set.seed(params$seed)
+
+n_values <- seq(500, 1000, by = 100)
+d_values <- seq(0.10, 0.50, by = 0.05)
+
+simulate_power <- function(n_total, d, nsims = 10000) {
+  n1 <- floor(n_total / 2)
+  n2 <- ceiling(n_total / 2)
+
+  rejected <- logical(nsims)
+
+  for (i in seq_len(nsims)) {
+    group1 <- rnorm(n1, mean = 0, sd = 1)
+    group2 <- rnorm(n2, mean = d, sd = 1)
+
+    test <- t.test(group2, group1, alternative = "two.sided", var.equal = FALSE)
+    rejected[i] <- test$p.value < 0.05
+  }
+
+  mean(rejected)
+}
+
+power_grid <- expand.grid(N = n_values, d = d_values)
+power_grid$power <- mapply(
+  simulate_power,
+  n_total = power_grid$N,
+  d = power_grid$d,
+  MoreArgs = list(nsims = params$nsims)
+)
+
+power_grid$N <- factor(power_grid$N)
+power_grid$d_label <- sprintf("%.2f", power_grid$d)
+power_grid <- power_grid[order(power_grid$d, power_grid$N), ]
+```
+
+# Results
+
+```{r power-table}
+display_table <- power_grid
+levels(display_table$N) <- paste0("N = ", levels(display_table$N))
+
+display_table <- reshape(
+  display_table[, c("d", "N", "power")],
+  idvar = "d",
+  timevar = "N",
+  direction = "wide"
+)
+
+names(display_table) <- sub("^power\\.", "N = ", names(display_table))
+names(display_table)[1] <- "d"
+
+display_table[-1] <- lapply(display_table[-1], function(x) sprintf("%.3f", x))
+
+kable(display_table, row.names = FALSE,
+      caption = "Simulated power by total sample size and Cohen's d")
+```
+
+## Power heatmap
+
+```{r heatmap, fig.cap="Simulated statistical power across effect sizes and total sample sizes."}
+ggplot(power_grid, aes(x = d, y = N, fill = power)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = sprintf("%.2f", power)), size = 3) +
+  scale_fill_gradient(low = "#FDE0DD", high = "#31A354", limits = c(0, 1),
+                      labels = scales::percent_format(accuracy = 1),
+                      name = "Power") +
+  scale_x_continuous(breaks = d_values) +
+  labs(x = "Cohen's d", y = "Total sample size (N)",
+       title = "Simulated power for a two-sided Welch t-test") +
+  theme_minimal(base_size = 12)
+```
+
+## Power curves
+
+```{r power-curves, fig.cap="Power curves for selected total sample sizes."}
+power_grid_continuous <- power_grid
+power_grid_continuous$N_numeric <- as.numeric(as.character(power_grid_continuous$N))
+
+ggplot(power_grid_continuous,
+       aes(x = d, y = power, color = factor(N_numeric), group = N_numeric)) +
+  geom_hline(yintercept = 0.80, linetype = "dashed", color = "grey50") +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 1.5) +
+  scale_y_continuous(limits = c(0, 1), labels = scales::percent_format()) +
+  scale_x_continuous(breaks = d_values) +
+  labs(x = "Cohen's d", y = "Statistical power",
+       color = "Total N",
+       title = "Power as a function of effect size and sample size") +
+  theme_minimal(base_size = 12)
+```
+
+# Notes
+
+- Power estimates are simulation-based and include Monte Carlo uncertainty.
+- Increasing `params$nsims` reduces this uncertainty but increases runtime.
+- At `r scales::comma(params$nsims)` simulations, the Monte Carlo standard error is at most approximately `r sprintf("%.3f", sqrt(0.25 / params$nsims))`.
+
+# Session information
+
+```{r session-info}
+sessionInfo()
+```
